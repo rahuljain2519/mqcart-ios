@@ -1,0 +1,96 @@
+name: iOS Release Build
+
+# Builds the MQ Cart iOS app on a macOS runner.
+#
+# Two modes:
+#   * Default (no Apple secrets set): builds an UNSIGNED archive so the app is
+#     proven to compile. Produces an .xcarchive artifact only.
+#   * Signed (all APPLE_* / APP_STORE_* secrets set): builds a signed .ipa and
+#     uploads it to TestFlight. Uncomment the "Signed build" / "Upload to
+#     TestFlight" steps and delete the "Unsigned build" step.
+#
+# Required repo secrets for the signed path:
+#   APPLE_CERTIFICATE_BASE64        distribution cert (.p12), base64
+#   APPLE_CERTIFICATE_PASSWORD      its password
+#   APPLE_PROVISIONING_PROFILE_BASE64   .mobileprovision, base64
+#   APP_STORE_CONNECT_KEY_ID        App Store Connect API key id
+#   APP_STORE_CONNECT_ISSUER_ID     issuer id
+#   APP_STORE_CONNECT_KEY_BASE64    AuthKey_XXXX.p8, base64
+#   GOOGLE_SERVICE_INFO_PLIST_BASE64  ios/Runner/GoogleService-Info.plist, base64
+#                                    (skip if you commit the plist directly)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+
+      - name: Restore GoogleService-Info.plist
+        if: ${{ env.PLIST != '' }}
+        env:
+          PLIST: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}
+        run: echo "$PLIST" | base64 --decode > ios/Runner/GoogleService-Info.plist
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Regenerate iOS launcher icons
+        run: dart run flutter_launcher_icons
+
+      # ---- Unsigned build (default; remove once signing secrets exist) --------
+      - name: Build iOS (unsigned)
+        run: flutter build ios --release --no-codesign
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild -workspace ios/Runner.xcworkspace \
+            -scheme Runner -configuration Release \
+            -archivePath build/Runner.xcarchive \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+
+      - name: Upload xcarchive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mqcart-ios-xcarchive
+          path: build/Runner.xcarchive
+
+      # ---- Signed build + TestFlight (enable when Apple account is ready) -----
+      #
+      # - name: Import signing assets
+      #   uses: apple-actions/import-codesign-certs@v3
+      #   with:
+      #     p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      #     p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #
+      # - name: Install provisioning profile
+      #   run: |
+      #     mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+      #     echo "${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}" | base64 --decode \
+      #       > ~/Library/MobileDevice/Provisioning\ Profiles/mqcart.mobileprovision
+      #
+      # - name: Build signed IPA
+      #   run: |
+      #     flutter build ipa --release \
+      #       --export-options-plist=ios/ExportOptions.plist
+      #
+      # - name: Upload to TestFlight
+      #   uses: apple-actions/upload-testflight-build@v3
+      #   with:
+      #     app-path: build/ios/ipa/*.ipa
+      #     issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      #     api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      #     api-private-key: ${{ secrets.APP_STORE_CONNECT_KEY_BASE64 }}
